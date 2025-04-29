@@ -560,7 +560,8 @@ app.post('/send/text', validateSendText, async (req, res, next) => { // Add vali
 
     try {
         // Basic formatting - might need refinement based on actual numbers
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.debug({ originalRecipient: to }, 'Formatting recipient number');
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
         logger.info({ recipient: formattedNumber }, `Attempting to send text message`);
 
         const result = await venomClient.sendText(formattedNumber, message);
@@ -659,7 +660,8 @@ app.post('/send/media', /* Add validation middleware here */ async (req, res, ne
 
 
     try {
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.debug({ originalRecipient: to }, 'Formatting recipient number');
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
         let result;
         const effectiveFileName = fileName || url.substring(url.lastIndexOf('/') + 1); // Use provided name or derive from URL
 
@@ -772,7 +774,8 @@ app.post('/send/list', /* Add validation middleware here */ async (req, res, nex
     }
 
     try {
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.debug({ originalRecipient: to }, 'Formatting recipient number');
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
         logger.info({ recipient: formattedNumber }, `Attempting to send list message`);
 
         const result = await venomClient.sendListMenu(formattedNumber, title, subtitle, description, buttonText, sections);
@@ -853,7 +856,8 @@ app.post('/send/buttons', /* Add validation middleware here */ async (req, res, 
     }
 
     try {
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.debug({ originalRecipient: to }, 'Formatting recipient number');
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
         logger.info({ recipient: formattedNumber }, `Attempting to send buttons message`);
 
         // Adjust button format if needed based on venom-bot documentation for Buttons Message Type
@@ -923,7 +927,8 @@ app.post('/send/location', /* Add validation middleware here */ async (req, res,
     }
 
     try {
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.debug({ originalRecipient: to }, 'Formatting recipient number');
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
         logger.info({ recipient: formattedNumber }, `Attempting to send location message`);
 
         const result = await venomClient.sendLocation(formattedNumber, latitude, longitude, name);
