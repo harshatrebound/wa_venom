@@ -1,15 +1,34 @@
+// Load environment variables
+require('dotenv').config();
+
 const express = require('express');
 const http = require('http');
 const { Server } = require("socket.io");
 const cors = require('cors');
 const venom = require('venom-bot');
-const path = require('path'); // Import path module
+const path = require('path');
+const helmet = require('helmet'); // Import helmet
+const { body, validationResult } = require('express-validator'); // Import validator
+const pino = require('pino'); // Import pino
+
+// Initialize logger
+const logger = pino({
+  level: process.env.LOG_LEVEL || 'info', // Default to 'info'
+  transport: process.env.NODE_ENV !== 'production'
+    ? { target: 'pino-pretty' } // Use pino-pretty in development
+    : undefined, // Use default JSON output in production
+});
 
 const app = express();
 const server = http.createServer(app);
+
+// --- CORS Configuration ---
+const allowedOrigin = process.env.CORS_ORIGIN || '*'; // Use env variable or default to *
+logger.info(`Configuring CORS for origin: ${allowedOrigin}`);
+
 const io = new Server(server, {
     cors: {
-        origin: "*", // Allow all origins for simplicity, adjust for production
+        origin: allowedOrigin,
         methods: ["GET", "POST"]
     }
 });
@@ -18,11 +37,12 @@ const io = new Server(server, {
 let venomClient = null;
 let sessionStatus = 'notLogged'; // Initial status
 let qrCodeBase64 = null;
-const SESSION_NAME = 'whatsapp-session'; // Define a session name
+// Use environment variable for session name, default if not set
+const SESSION_NAME = process.env.SESSION_NAME || 'whatsapp-session';
 
 // --- Helper function to update status and emit ---
 function updateStatus(newStatus, qrData = null) {
-    console.log('Session Status Updated:', newStatus);
+    logger.info({ status: newStatus }, 'Session Status Updated'); // Use logger
     sessionStatus = newStatus;
     qrCodeBase64 = qrData; // Update QR code (null if not applicable)
     io.emit('status_update', sessionStatus); // Emit to all connected clients
@@ -33,14 +53,14 @@ function updateStatus(newStatus, qrData = null) {
 
 // --- Venom Session Start Function ---
 async function startVenomSession() {
-    if (venomClient || sessionStatus === 'starting' || sessionStatus === 'isLogged' || sessionStatus === 'chatsAvailable' || sessionStatus === 'qrRead') {
-        console.log('Session already started or in progress.');
+    if (venomClient || ['starting', 'isLogged', 'chatsAvailable', 'qrRead'].includes(sessionStatus)) {
+        logger.warn({ currentStatus: sessionStatus }, 'Session start requested but already started or in progress.');
         // Optionally re-emit current state to be sure
         updateStatus(sessionStatus, qrCodeBase64);
         return;
     }
 
-    console.log('Starting Venom session...');
+    logger.info(`Starting Venom session: ${SESSION_NAME}`);
     updateStatus('starting');
 
     try {
@@ -48,74 +68,87 @@ async function startVenomSession() {
             SESSION_NAME,
             // QR Code Callback
             (base64Qr, asciiQR, attempts, urlCode) => {
-                console.log('QR Code Received');
+                logger.info('QR Code Received');
                 updateStatus('qrRead', base64Qr);
             },
             // Status Callback
-            (statusSession, session) => {
-                console.log('Status Callback:', statusSession, '- Session:', session);
+            (statusSessionUpdate, session) => {
+                logger.info({ status: statusSessionUpdate, session }, 'Venom Status Callback Received');
                 // Update global status based on callback
-                updateStatus(statusSession, (statusSession === 'qrRead') ? qrCodeBase64 : null);
+                updateStatus(statusSessionUpdate, (statusSessionUpdate === 'qrRead') ? qrCodeBase64 : null);
 
                 // Store client instance when logged in
-                if (statusSession === 'isLogged' || statusSession === 'chatsAvailable') {
-                    // Client might be ready here, but let's rely on the .then() for the definitive client instance
-                }
+                // if (statusSessionUpdate === 'isLogged' || statusSessionUpdate === 'chatsAvailable') {
+                //     // Client is ready
+                // }
 
                 // Reset client if disconnected or browser closed
-                if (['notLogged', 'browserClose', 'desconnectedMobile', 'deleteToken'].includes(statusSession)) {
+                if (['notLogged', 'browserClose', 'desconnectedMobile', 'deleteToken'].includes(statusSessionUpdate)) {
+                    logger.warn({ status: statusSessionUpdate }, 'Session disconnected or token deleted. Resetting client.');
                     venomClient = null;
-                    updateStatus(statusSession); // Ensure status is updated
+                    // Ensure status is updated AFTER client is nullified
+                    updateStatus(statusSessionUpdate);
                 }
             },
             // Options
             {
                 headless: 'new', // Use the new headless mode
+                // puppeteerOptions: { args: ['--no-sandbox', '--disable-setuid-sandbox'] }, // Uncomment if running in Docker/Linux without proper user setup
                 logQR: false, // We handle QR logs via callback
                 autoClose: 60000, // Close after 60s if QR not scanned (default)
                 disableWelcome: true,
+                sessionFolder: path.join(__dirname, 'tokens'), // Explicitly set session folder
+                folderNameToken: SESSION_NAME // Use the same name for token folder
             }
         );
 
-        console.log('Venom client created successfully.');
-        // Although status callback handles isLogged/chatsAvailable, storing client here is safer
+        logger.info('Venom client instance created.');
         // Double-check status after create resolves
-        if (sessionStatus !== 'isLogged' && sessionStatus !== 'chatsAvailable') {
-            // If create resolves but status isn't logged in, update it
-            const currentState = await venomClient.getConnectionState();
-            console.log("Current connection state after create:", currentState);
-            if (currentState === 'CONNECTED') {
-                 updateStatus('isLogged');
-            } else {
-                // Handle cases where it might resolve but still not be fully logged in
-                // This might indicate an issue or a state not covered by simple status strings
-                console.warn('Client created but connection state is not CONNECTED.');
-                 // Re-trigger start might be needed or investigate the state
-                 updateStatus('notLogged'); // Fallback status
-                 venomClient = null; // Reset client if not truly connected
+        if (!['isLogged', 'chatsAvailable'].includes(sessionStatus)) {
+            try {
+                 const currentState = await venomClient.getConnectionState();
+                 logger.info({ connectionState: currentState }, "Current connection state after create");
+                 if (currentState === 'CONNECTED') {
+                      updateStatus('isLogged');
+                 } else {
+                     logger.warn('Client created but connection state is not CONNECTED. Might need restart.');
+                     updateStatus('notLogged'); // Fallback status
+                     // Don't nullify client immediately, allow status callback to handle potential reconnection
+                     // venomClient = null; // Reset client if not truly connected? Maybe handled by status cb
+                 }
+            } catch (stateError) {
+                logger.error({ error: stateError }, "Error getting connection state after create");
+                updateStatus('error');
+                venomClient = null;
             }
+
         } else {
              // Already updated by status callback
+             logger.info("Client status already updated to logged in state by callback.");
              updateStatus(sessionStatus);
         }
         // Add message listeners or other initial setup here if needed
-        // client.onMessage(...) etc.
+        // venomClient.onMessage(...) etc.
 
     } catch (error) {
-        console.error('Error starting Venom session:', error);
+        logger.error({ error: error.message, stack: error.stack }, 'Error starting Venom session');
         venomClient = null;
         updateStatus('error'); // Set status to error
     }
 }
 
 // --- Middleware ---
-app.use(cors()); // Enable CORS for all routes
+app.use(helmet()); // Add security headers
+app.use(cors({ // Configure CORS using the variable
+    origin: allowedOrigin,
+    methods: ["GET", "POST"]
+}));
 app.use(express.json()); // Middleware to parse JSON bodies
 app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from public directory
 
 // --- Socket.IO Connection ---
 io.on('connection', (socket) => {
-    console.log('A user connected:', socket.id);
+    logger.info({ socketId: socket.id }, 'User connected via Socket.IO');
 
     // Send initial status and QR code if available
     socket.emit('status_update', sessionStatus);
@@ -124,7 +157,7 @@ io.on('connection', (socket) => {
     }
 
     socket.on('disconnect', () => {
-        console.log('User disconnected:', socket.id);
+        logger.info({ socketId: socket.id }, 'User disconnected via Socket.IO');
     });
 });
 
@@ -134,11 +167,17 @@ app.get('/', (req, res) => {
 });
 
 // Endpoint to start the WhatsApp session
-app.post('/start', async (req, res) => {
+app.post('/start', async (req, res, next) => { // Add next for error handling
     if (!venomClient && !['starting', 'qrRead', 'isLogged', 'chatsAvailable'].includes(sessionStatus)) {
-        await startVenomSession();
-        res.status(200).json({ message: 'Session initialization started.', status: sessionStatus });
+        try {
+            await startVenomSession();
+            res.status(200).json({ message: 'Session initialization started.', status: sessionStatus });
+        } catch (error) {
+             logger.error({ error }, "Error caught in /start endpoint");
+             next(error); // Pass error to central handler
+        }
     } else {
+        logger.warn({ currentStatus: sessionStatus }, "/start called when session already active or starting.");
         res.status(400).json({ message: 'Session already active or starting.', status: sessionStatus });
     }
 });
@@ -149,305 +188,305 @@ app.get('/status', (req, res) => {
 });
 
 // Endpoint to log out
-app.post('/logout', async (req, res) => {
+app.post('/logout', async (req, res, next) => { // Add next
     if (venomClient) {
         try {
+            logger.info("Attempting to logout...");
             await venomClient.logout();
-            console.log('Logout successful.');
-            venomClient = null;
-            updateStatus('notLogged');
+            logger.info('Logout successful via API.');
+            // Status callback should handle setting venomClient = null and status update
             res.status(200).json({ message: 'Logout successful.', status: 'notLogged' });
         } catch (error) {
-            console.error('Error during logout:', error);
-            // Even if logout fails, try to reset state
+            logger.error({ error }, 'Error during API logout');
+            // Attempt to reset state even if logout command fails
             venomClient = null;
             updateStatus('error');
-            res.status(500).json({ message: 'Error during logout.', status: 'error' });
+            next(error); // Pass error to central handler
         }
     } else {
+        logger.warn("/logout called but no active session found.");
         updateStatus('notLogged'); // Ensure status is correct if already logged out
         res.status(400).json({ message: 'No active session to log out.', status: 'notLogged' });
     }
 });
 
-// Placeholder for venom functions (will be added later)
-// Send message endpoints will go here
-
 // --- Helper function to check if client is ready ---
 function isClientReady() {
-    return venomClient && (sessionStatus === 'isLogged' || sessionStatus === 'chatsAvailable');
+    const ready = venomClient && ['isLogged', 'chatsAvailable'].includes(sessionStatus);
+    if (!ready) {
+        logger.warn({ clientExists: !!venomClient, status: sessionStatus }, "Client not ready check failed.");
+    }
+    return ready;
 }
+
+// --- Validation Middleware ---
+const validateSendText = [
+  body('to').notEmpty().withMessage('Recipient phone number ("to") is required.').isString(),
+  body('message').notEmpty().withMessage('Message content ("message") is required.').isString(),
+];
 
 // --- Message Sending Endpoints ---
 
 // Send text message
-app.post('/send/text', async (req, res) => {
+app.post('/send/text', validateSendText, async (req, res, next) => { // Add validation and next
+    // Handle validation errors
+    const errors = validationResult(req);
+    if (!errors.isEmpty()) {
+      logger.warn({ errors: errors.array() }, "Validation failed for /send/text");
+      return res.status(400).json({ success: false, message: "Validation errors", errors: errors.array() });
+    }
+
     if (!isClientReady()) {
-        return res.status(400).json({ 
-            success: false, 
+        return res.status(400).json({
+            success: false,
             message: 'WhatsApp session not active. Please scan QR code and try again.',
             status: sessionStatus
         });
     }
 
     const { to, message } = req.body;
-    
-    if (!to || !message) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Missing required parameters: "to" (phone number) and "message" are required.'
-        });
-    }
 
     try {
-        // Format the phone number - ensure it has country code and correct format
-        // This is a simple formatter - adjust as needed for your use case
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
-        
+        // Basic formatting - might need refinement based on actual numbers
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.info({ recipient: formattedNumber }, `Attempting to send text message`);
+
         const result = await venomClient.sendText(formattedNumber, message);
-        console.log(`Text message sent to ${formattedNumber}`);
-        
-        res.status(200).json({ 
-            success: true, 
+        logger.info({ recipient: formattedNumber, resultId: result.id }, `Text message sent successfully`);
+
+        res.status(200).json({
+            success: true,
             message: 'Message sent successfully',
-            data: result 
+            data: result
         });
     } catch (error) {
-        console.error('Error sending text message:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to send message',
-            error: error.message 
-        });
+        logger.error({ error: error.message, recipient: to }, 'Error sending text message');
+        // Pass error to the central handler
+        next(new Error(`Failed to send text message: ${error.message}`));
     }
 });
 
-// Send media (image, video, document)
-app.post('/send/media', async (req, res) => {
+// Send media (image, video, document) - Apply similar validation pattern
+// TODO: Add express-validator checks for /send/media
+app.post('/send/media', /* Add validation middleware here */ async (req, res, next) => { // Add next
     if (!isClientReady()) {
-        return res.status(400).json({ 
-            success: false, 
+        return res.status(400).json({
+            success: false,
             message: 'WhatsApp session not active. Please scan QR code and try again.',
             status: sessionStatus
         });
     }
 
     const { to, type, url, caption, fileName } = req.body;
-    
+
+    // Basic check - replace with express-validator later
     if (!to || !type || !url) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Missing required parameters: "to", "type" (image, video, document), and "url" are required.'
-        });
+         logger.warn({ body: req.body }, "Missing parameters for /send/media");
+         return res.status(400).json({
+             success: false,
+             message: 'Missing required parameters: "to", "type" (image, video, document), and "url" are required.'
+         });
+    }
+    const validTypes = ['image', 'video', 'document', 'audio', 'sticker'];
+    if (!validTypes.includes(type.toLowerCase())) {
+         logger.warn({ type: type }, "Invalid media type for /send/media");
+         return res.status(400).json({
+             success: false,
+             message: `Invalid media type "${type}". Valid types are: ${validTypes.join(', ')}`
+         });
     }
 
+
     try {
-        // Format the phone number
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
         let result;
+        const effectiveFileName = fileName || url.substring(url.lastIndexOf('/') + 1); // Use provided name or derive from URL
+
+        logger.info({ recipient: formattedNumber, type, url }, `Attempting to send media`);
 
         switch (type.toLowerCase()) {
             case 'image':
-                result = await venomClient.sendImage(
-                    formattedNumber,
-                    url,
-                    fileName || 'image',
-                    caption || ''
-                );
-                console.log(`Image sent to ${formattedNumber}`);
+                result = await venomClient.sendImage(formattedNumber, url, effectiveFileName, caption);
                 break;
-            
             case 'video':
-                result = await venomClient.sendFile(
-                    formattedNumber,
-                    url,
-                    fileName || 'video',
-                    caption || ''
-                );
-                console.log(`Video sent to ${formattedNumber}`);
+                result = await venomClient.sendVideoAsGif(formattedNumber, url, effectiveFileName, caption); // Or sendVideo for non-GIF
                 break;
-            
             case 'document':
-                result = await venomClient.sendFile(
-                    formattedNumber,
-                    url,
-                    fileName || 'document',
-                    caption || ''
-                );
-                console.log(`Document sent to ${formattedNumber}`);
+                result = await venomClient.sendFile(formattedNumber, url, effectiveFileName, caption);
                 break;
-            
-            default:
-                return res.status(400).json({ 
-                    success: false, 
-                    message: `Invalid media type: ${type}. Supported types are: image, video, document.`
-                });
+             case 'audio': // Example: Sending audio needs a specific function if available, or send via sendFile
+                // result = await venomClient.sendVoice(formattedNumber, url); // If sending as voice note
+                 result = await venomClient.sendFile(formattedNumber, url, effectiveFileName, caption); // Or as a file
+                break;
+             case 'sticker': // Requires different handling - needs a local file path usually or base64
+                 logger.warn("Sticker sending via URL is complex/not directly supported by default sendFile. Needs specific implementation.");
+                 // result = await venomClient.sendImageAsSticker(formattedNumber, url); // Needs image URL or path
+                 return res.status(501).json({ success: false, message: "Sending sticker from URL not implemented yet." });
+            default: // Should not happen due to validation above, but good practice
+                 throw new Error(`Unsupported media type: ${type}`);
         }
-        
-        res.status(200).json({ 
-            success: true, 
-            message: `${type} sent successfully`,
-            data: result 
-        });
+
+        logger.info({ recipient: formattedNumber, type, resultId: result.id }, `Media sent successfully`);
+        res.status(200).json({ success: true, message: `Media (${type}) sent successfully`, data: result });
+
     } catch (error) {
-        console.error(`Error sending ${req.body.type}:`, error);
-        res.status(500).json({ 
-            success: false, 
-            message: `Failed to send ${req.body.type}`,
-            error: error.message 
-        });
+        logger.error({ error: error.message, recipient: to, type }, `Error sending media (${type})`);
+        next(new Error(`Failed to send media (${type}): ${error.message}`));
     }
 });
 
-// Send interactive list menu
-app.post('/send/list', async (req, res) => {
-    if (!isClientReady()) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'WhatsApp session not active. Please scan QR code and try again.',
-            status: sessionStatus
-        });
+// Send an interactive list menu
+// TODO: Add express-validator checks for /send/list
+app.post('/send/list', /* Add validation middleware here */ async (req, res, next) => { // Add next
+     if (!isClientReady()) {
+        return res.status(400).json({ success: false, message: 'WhatsApp session not active.', status: sessionStatus });
     }
-
     const { to, title, subtitle, description, buttonText, sections } = req.body;
-    
-    if (!to || !title || !buttonText || !sections || !Array.isArray(sections)) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Missing required parameters. "to", "title", "buttonText", and "sections" array are required.'
-        });
+
+    // Basic checks - replace with express-validator
+    if (!to || !title || !description || !buttonText || !sections || !Array.isArray(sections) || sections.length === 0) {
+        logger.warn({ body: req.body }, "Missing or invalid parameters for /send/list");
+        return res.status(400).json({ success: false, message: 'Missing or invalid parameters for list message.' });
     }
 
     try {
-        // Format the phone number
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
-        
-        const result = await venomClient.sendListMenu(
-            formattedNumber,
-            title,
-            subtitle || '',
-            description || '',
-            buttonText,
-            sections
-        );
-        
-        console.log(`List menu sent to ${formattedNumber}`);
-        res.status(200).json({ 
-            success: true, 
-            message: 'List menu sent successfully',
-            data: result 
-        });
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.info({ recipient: formattedNumber }, `Attempting to send list message`);
+
+        const result = await venomClient.sendListMenu(formattedNumber, title, subtitle, description, buttonText, sections);
+
+        logger.info({ recipient: formattedNumber, resultId: result.id }, `List message sent successfully`);
+        res.status(200).json({ success: true, message: 'List message sent successfully', data: result });
+
     } catch (error) {
-        console.error('Error sending list menu:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to send list menu',
-            error: error.message 
-        });
+        logger.error({ error: error.message, recipient: to }, 'Error sending list message');
+        next(new Error(`Failed to send list message: ${error.message}`));
     }
 });
 
 // Send buttons
-app.post('/send/buttons', async (req, res) => {
+// TODO: Add express-validator checks for /send/buttons
+app.post('/send/buttons', /* Add validation middleware here */ async (req, res, next) => { // Add next
     if (!isClientReady()) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'WhatsApp session not active. Please scan QR code and try again.',
-            status: sessionStatus
-        });
+        return res.status(400).json({ success: false, message: 'WhatsApp session not active.', status: sessionStatus });
     }
-
     const { to, title, description, buttons } = req.body;
-    
-    if (!to || !title || !buttons || !Array.isArray(buttons)) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Missing required parameters. "to", "title", and "buttons" array are required.'
-        });
+
+    // Basic checks - replace with express-validator
+     if (!to || !description || !buttons || !Array.isArray(buttons) || buttons.length === 0) {
+        logger.warn({ body: req.body }, "Missing or invalid parameters for /send/buttons");
+        return res.status(400).json({ success: false, message: 'Missing or invalid parameters for button message.' });
     }
 
     try {
-        // Format the phone number
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
-        
-        const result = await venomClient.sendButtons(
-            formattedNumber,
-            title,
-            description || '',
-            buttons
-        );
-        
-        console.log(`Buttons sent to ${formattedNumber}`);
-        res.status(200).json({ 
-            success: true, 
-            message: 'Buttons sent successfully',
-            data: result 
-        });
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.info({ recipient: formattedNumber }, `Attempting to send buttons message`);
+
+        // Adjust button format if needed based on venom-bot documentation for Buttons Message Type
+        // The example in README might need adjustment. Assuming it's correct for now.
+        const result = await venomClient.sendButtons(formattedNumber, title || '', buttons, description); // Title might be optional or part of description
+
+        logger.info({ recipient: formattedNumber, resultId: result.id }, `Buttons message sent successfully`);
+        res.status(200).json({ success: true, message: 'Buttons message sent successfully', data: result });
+
     } catch (error) {
-        console.error('Error sending buttons:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to send buttons',
-            error: error.message 
-        });
+        logger.error({ error: error.message, recipient: to }, 'Error sending buttons message');
+        next(new Error(`Failed to send buttons message: ${error.message}`));
     }
 });
 
 // Send location
-app.post('/send/location', async (req, res) => {
-    if (!isClientReady()) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'WhatsApp session not active. Please scan QR code and try again.',
-            status: sessionStatus
-        });
+// TODO: Add express-validator checks for /send/location
+app.post('/send/location', /* Add validation middleware here */ async (req, res, next) => { // Add next
+     if (!isClientReady()) {
+        return res.status(400).json({ success: false, message: 'WhatsApp session not active.', status: sessionStatus });
     }
-
     const { to, latitude, longitude, name } = req.body;
-    
-    if (!to || !latitude || !longitude) {
-        return res.status(400).json({ 
-            success: false, 
-            message: 'Missing required parameters. "to", "latitude", and "longitude" are required.'
-        });
+
+     // Basic checks - replace with express-validator
+    if (!to || !latitude || !longitude || !name) {
+        logger.warn({ body: req.body }, "Missing parameters for /send/location");
+        return res.status(400).json({ success: false, message: 'Missing required parameters: "to", "latitude", "longitude", "name".' });
     }
 
     try {
-        // Format the phone number
-        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\d]/g, '')}@c.us`;
-        
-        const result = await venomClient.sendLocation(
-            formattedNumber,
-            latitude,
-            longitude,
-            name || 'Location'
-        );
-        
-        console.log(`Location sent to ${formattedNumber}`);
-        res.status(200).json({ 
-            success: true, 
-            message: 'Location sent successfully',
-            data: result 
-        });
+        const formattedNumber = to.includes('@c.us') ? to : `${to.replace(/[^\\d]/g, '')}@c.us`;
+        logger.info({ recipient: formattedNumber }, `Attempting to send location message`);
+
+        const result = await venomClient.sendLocation(formattedNumber, latitude, longitude, name);
+
+        logger.info({ recipient: formattedNumber, resultId: result.id }, `Location message sent successfully`);
+        res.status(200).json({ success: true, message: 'Location sent successfully', data: result });
+
     } catch (error) {
-        console.error('Error sending location:', error);
-        res.status(500).json({ 
-            success: false, 
-            message: 'Failed to send location',
-            error: error.message 
-        });
+        logger.error({ error: error.message, recipient: to }, 'Error sending location');
+        next(new Error(`Failed to send location: ${error.message}`));
     }
 });
 
-// --- Other Potential Endpoints ---
-// - GET /contacts - Get all contacts
-// app.get('/contacts', ...)
-// - GET /chats - Get all chats
-// app.get('/chats', ...)
-// - More endpoints can be added as needed
 
-// --- Start Server ---
-const PORT = process.env.PORT || 3000;
+// --- Central Error Handling Middleware ---
+// Must be defined LAST, after all other app.use() and routes
+app.use((err, req, res, next) => {
+    logger.error({
+        error: err.message,
+        stack: err.stack,
+        url: req.originalUrl,
+        method: req.method,
+        ip: req.ip
+    }, "Unhandled error occurred");
+
+    // Avoid sending stack trace in production
+    const errorResponse = {
+        success: false,
+        message: 'An internal server error occurred.',
+        ...(process.env.NODE_ENV !== 'production' && { error: err.message }) // Include error message in non-prod
+    };
+
+    res.status(err.status || 500).json(errorResponse);
+});
+
+
+// --- Start the Server ---
+const PORT = process.env.PORT || 3000; // Use environment variable for port or default to 3000
 server.listen(PORT, () => {
-    console.log(`Server listening on port ${PORT}`);
+    logger.info(`Server listening on port ${PORT}`);
+    // Optionally, try to auto-start the session on server boot
+    // logger.info("Attempting to auto-start Venom session on server startup...");
+    // startVenomSession(); // Be cautious with auto-start, might cause issues if server restarts frequently
+});
+
+// Graceful shutdown handling (optional but good practice)
+process.on('SIGINT', async () => {
+    logger.info('SIGINT signal received. Shutting down gracefully...');
+    if (venomClient) {
+        try {
+            logger.info('Closing Venom client...');
+            await venomClient.close();
+            logger.info('Venom client closed.');
+        } catch (e) {
+            logger.error({ error: e }, 'Error closing Venom client during shutdown.');
+        }
+    }
+    server.close(() => {
+        logger.info('HTTP server closed.');
+        process.exit(0);
+    });
+});
+
+process.on('SIGTERM', async () => {
+     logger.info('SIGTERM signal received. Shutting down gracefully...');
+    if (venomClient) {
+        try {
+            logger.info('Closing Venom client...');
+            await venomClient.close();
+            logger.info('Venom client closed.');
+        } catch (e) {
+            logger.error({ error: e }, 'Error closing Venom client during shutdown.');
+        }
+    }
+    server.close(() => {
+        logger.info('HTTP server closed.');
+        process.exit(0);
+    });
 }); 
