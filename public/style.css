@@ -1,0 +1,191 @@
+/* General Styles */
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+    font-family: Arial, sans-serif;
+}
+
+body {
+    background-color: #f5f5f5;
+    color: #333;
+    line-height: 1.6;
+}
+
+.container {
+    max-width: 900px;
+    margin: 20px auto;
+    padding: 20px;
+    background-color: #fff;
+    border-radius: 8px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+}
+
+h1 {
+    text-align: center;
+    margin-bottom: 30px;
+    color: #128C7E; /* WhatsApp green */
+}
+
+h2 {
+    margin-bottom: 20px;
+    color: #128C7E;
+    border-bottom: 1px solid #eaeaea;
+    padding-bottom: 10px;
+}
+
+h3 {
+    margin: 15px 0;
+    color: #075E54; /* WhatsApp dark green */
+}
+
+h4 {
+    margin: 10px 0;
+    color: #075E54;
+}
+
+/* Form Styles */
+.form-group {
+    margin-bottom: 15px;
+}
+
+label {
+    display: block;
+    margin-bottom: 5px;
+    font-weight: bold;
+}
+
+input, select, textarea {
+    width: 100%;
+    padding: 10px;
+    border: 1px solid #ddd;
+    border-radius: 4px;
+    font-size: 16px;
+}
+
+textarea {
+    resize: vertical;
+    font-family: monospace;
+}
+
+.btn {
+    padding: 10px 15px;
+    background-color: #128C7E;
+    color: white;
+    border: none;
+    border-radius: 4px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-color 0.3s;
+}
+
+.btn:hover {
+    background-color: #075E54;
+}
+
+.btn-primary {
+    background-color: #128C7E;
+}
+
+.btn-danger {
+    background-color: #c0392b;
+}
+
+.btn-danger:hover {
+    background-color: #a93226;
+}
+
+/* Section Styles */
+.hidden {
+    display: none;
+}
+
+#login-section, 
+#app-section {
+    margin-bottom: 30px;
+}
+
+.session-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    margin-bottom: 20px;
+    padding: 15px;
+    background-color: #f9f9f9;
+    border-radius: 4px;
+}
+
+.status-container {
+    flex: 1;
+}
+
+.session-controls {
+    display: flex;
+    gap: 10px;
+}
+
+#status-display {
+    font-weight: bold;
+    color: #128C7E;
+}
+
+/* QR Code Styles */
+#qr-container {
+    text-align: center;
+    margin: 20px 0;
+    padding: 20px;
+    background-color: #f9f9f9;
+    border-radius: 4px;
+}
+
+.qr-code-wrapper {
+    margin: 20px auto;
+    max-width: 300px;
+}
+
+#qr-code {
+    display: block;
+    width: 100%;
+    height: auto;
+    margin: 0 auto;
+    border: 1px solid #ddd;
+}
+
+/* Message Form Styles */
+.message-form {
+    margin-bottom: 30px;
+    padding: 20px;
+    background-color: #f9f9f9;
+    border-radius: 4px;
+    border-left: 5px solid #128C7E;
+}
+
+/* Notification Area */
+#notification-area {
+    position: fixed;
+    bottom: 20px;
+    right: 20px;
+    padding: 15px;
+    background-color: #333;
+    color: white;
+    border-radius: 4px;
+    z-index: 1000;
+    max-width: 300px;
+}
+
+/* Responsive Styles */
+@media (max-width: 768px) {
+    .container {
+        margin: 10px;
+        padding: 15px;
+    }
+    
+    .session-container {
+        flex-direction: column;
+        gap: 15px;
+    }
+    
+    .session-controls {
+        width: 100%;
+    }
+} 

@@ -1,0 +1,219 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Venom WhatsApp Bot</title>
+    <link rel="stylesheet" href="style.css">
+    <script src="/socket.io/socket.io.js" defer></script>
+    <script src="script.js" defer></script>
+</head>
+<body>
+    <div class="container">
+        <h1>Venom WhatsApp Bot</h1>
+        
+        <!-- Login Section -->
+        <div id="login-section">
+            <h2>Login</h2>
+            <form id="login-form">
+                <div class="form-group">
+                    <label for="username">Username</label>
+                    <input type="text" id="username" required>
+                </div>
+                <div class="form-group">
+                    <label for="password">Password</label>
+                    <input type="password" id="password" required>
+                </div>
+                <button type="submit" class="btn btn-primary">Login</button>
+            </form>
+        </div>
+
+        <!-- Main App Section (initially hidden) -->
+        <div id="app-section" class="hidden">
+            <h2>WhatsApp Integration</h2>
+            
+            <!-- Session Status and Controls -->
+            <div class="session-container">
+                <div class="status-container">
+                    <h3>Session Status</h3>
+                    <p id="status-display">Not logged in</p>
+                </div>
+                <div class="session-controls">
+                    <button id="start-session" class="btn">Start WhatsApp Session</button>
+                    <button id="logout" class="btn btn-danger">Logout from WhatsApp</button>
+                </div>
+            </div>
+            
+            <!-- QR Code Section -->
+            <div id="qr-container" class="hidden">
+                <h3>Scan this QR code with WhatsApp</h3>
+                <div class="qr-code-wrapper">
+                    <img id="qr-code" src="" alt="WhatsApp QR Code">
+                </div>
+                <p>Please scan with WhatsApp mobile app. QR will expire after 60 seconds.</p>
+            </div>
+
+            <!-- Message Section (shown only when logged in) -->
+            <div id="message-section" class="hidden">
+                <h3>Send Messages</h3>
+                
+                <!-- Text Message -->
+                <div class="message-form">
+                    <h4>Text Message</h4>
+                    <form id="text-message-form">
+                        <div class="form-group">
+                            <label for="text-to">To (Phone Number with Country Code)</label>
+                            <input type="text" id="text-to" placeholder="E.g. 15551234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="text-message">Message</label>
+                            <textarea id="text-message" rows="3" required></textarea>
+                        </div>
+                        <button type="submit" class="btn">Send Text</button>
+                    </form>
+                </div>
+                
+                <!-- Media Message -->
+                <div class="message-form">
+                    <h4>Media Message</h4>
+                    <form id="media-message-form">
+                        <div class="form-group">
+                            <label for="media-to">To (Phone Number with Country Code)</label>
+                            <input type="text" id="media-to" placeholder="E.g. 15551234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="media-type">Media Type</label>
+                            <select id="media-type" required>
+                                <option value="image">Image</option>
+                                <option value="video">Video</option>
+                                <option value="document">Document</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label for="media-url">Media URL</label>
+                            <input type="url" id="media-url" placeholder="https://example.com/image.jpg" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="media-caption">Caption (Optional)</label>
+                            <input type="text" id="media-caption">
+                        </div>
+                        <div class="form-group">
+                            <label for="media-filename">File Name (Optional)</label>
+                            <input type="text" id="media-filename">
+                        </div>
+                        <button type="submit" class="btn">Send Media</button>
+                    </form>
+                </div>
+                
+                <!-- List Message -->
+                <div class="message-form">
+                    <h4>Interactive List</h4>
+                    <form id="list-message-form">
+                        <div class="form-group">
+                            <label for="list-to">To (Phone Number with Country Code)</label>
+                            <input type="text" id="list-to" placeholder="E.g. 15551234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="list-title">Title</label>
+                            <input type="text" id="list-title" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="list-subtitle">Subtitle (Optional)</label>
+                            <input type="text" id="list-subtitle">
+                        </div>
+                        <div class="form-group">
+                            <label for="list-description">Description (Optional)</label>
+                            <input type="text" id="list-description">
+                        </div>
+                        <div class="form-group">
+                            <label for="list-button-text">Button Text</label>
+                            <input type="text" id="list-button-text" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="list-sections">Sections (JSON Format)</label>
+                            <textarea id="list-sections" rows="8" required>[
+  {
+    "title": "Section 1",
+    "rows": [
+      {
+        "title": "Option 1",
+        "description": "Description 1"
+      },
+      {
+        "title": "Option 2",
+        "description": "Description 2"
+      }
+    ]
+  }
+]</textarea>
+                        </div>
+                        <button type="submit" class="btn">Send List</button>
+                    </form>
+                </div>
+                
+                <!-- Button Message -->
+                <div class="message-form">
+                    <h4>Button Message</h4>
+                    <form id="button-message-form">
+                        <div class="form-group">
+                            <label for="button-to">To (Phone Number with Country Code)</label>
+                            <input type="text" id="button-to" placeholder="E.g. 15551234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="button-title">Title</label>
+                            <input type="text" id="button-title" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="button-description">Description (Optional)</label>
+                            <input type="text" id="button-description">
+                        </div>
+                        <div class="form-group">
+                            <label for="button-data">Buttons (JSON Format)</label>
+                            <textarea id="button-data" rows="6" required>[
+  {
+    "buttonText": {
+      "displayText": "Button 1"
+    }
+  },
+  {
+    "buttonText": {
+      "displayText": "Button 2"
+    }
+  }
+]</textarea>
+                        </div>
+                        <button type="submit" class="btn">Send Buttons</button>
+                    </form>
+                </div>
+                
+                <!-- Location Message -->
+                <div class="message-form">
+                    <h4>Location Message</h4>
+                    <form id="location-message-form">
+                        <div class="form-group">
+                            <label for="location-to">To (Phone Number with Country Code)</label>
+                            <input type="text" id="location-to" placeholder="E.g. 15551234567" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="location-latitude">Latitude</label>
+                            <input type="text" id="location-latitude" placeholder="E.g. 37.7749" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="location-longitude">Longitude</label>
+                            <input type="text" id="location-longitude" placeholder="E.g. -122.4194" required>
+                        </div>
+                        <div class="form-group">
+                            <label for="location-name">Location Name (Optional)</label>
+                            <input type="text" id="location-name" placeholder="E.g. San Francisco">
+                        </div>
+                        <button type="submit" class="btn">Send Location</button>
+                    </form>
+                </div>
+            </div>
+        </div>
+        
+        <!-- Status/Notification Area -->
+        <div id="notification-area" class="hidden"></div>
+    </div>
+</body>
+</html> 
