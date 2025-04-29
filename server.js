@@ -10,6 +10,9 @@ const path = require('path');
 const helmet = require('helmet'); // Import helmet
 const { body, validationResult } = require('express-validator'); // Import validator
 const pino = require('pino'); // Import pino
+const swaggerJsdoc = require('swagger-jsdoc');
+const swaggerUi = require('swagger-ui-express');
+const basicAuth = require('express-basic-auth');
 
 // Initialize logger
 const logger = pino({
@@ -146,6 +149,68 @@ app.use(cors({ // Configure CORS using the variable
 app.use(express.json()); // Middleware to parse JSON bodies
 app.use(express.static(path.join(__dirname, 'public'))); // Serve static files from public directory
 
+// --- Swagger Definition ---
+const swaggerOptions = {
+  definition: {
+    openapi: '3.0.0',
+    info: {
+      title: 'Venom WhatsApp Bot API',
+      version: '1.0.0',
+      description: 'API documentation for the Venom WhatsApp Bot application, providing endpoints to manage sessions and send messages.',
+    },
+    servers: [
+      {
+        url: `http://localhost:${process.env.PORT || 3000}`,
+        description: 'Development server'
+      },
+      // Add other servers like production if needed
+    ],
+    components: {
+        securitySchemes: {
+          basicAuth: { // Can be called anything, chose "basicAuth" for clarity
+            type: 'http',
+            scheme: 'basic'
+          }
+        }
+    },
+    // security: [
+    //   {
+    //     basicAuth: [] // Apply basic auth globally if needed, but we apply per-route
+    //   }
+    // ]
+  },
+  apis: ['./server.js'], // Files containing annotations
+};
+
+const swaggerSpec = swaggerJsdoc(swaggerOptions);
+
+// --- Basic Authentication Middleware for Swagger ---
+// Ensure ADMIN_USERNAME and ADMIN_PASSWORD are set in .env
+const adminUsername = process.env.ADMIN_USERNAME;
+const adminPassword = process.env.ADMIN_PASSWORD;
+
+let swaggerUsers = {};
+if (adminUsername && adminPassword) {
+    swaggerUsers[adminUsername] = adminPassword;
+} else {
+    logger.warn('ADMIN_USERNAME or ADMIN_PASSWORD not set in environment. Swagger UI will be unprotected or inaccessible if auth is enforced without users.');
+    // Handle this case - maybe disable swagger or use default insecure creds?
+    // For now, it will allow access without auth if creds aren't set, which is bad practice.
+    // A better approach would be to throw an error or disable the route.
+}
+
+const swaggerAuth = basicAuth({
+    users: swaggerUsers,
+    challenge: true, // Send WWW-Authenticate header to prompt for login
+    unauthorizedResponse: (req) => {
+        return `Unauthorized access to API docs. Please provide valid credentials.`;
+    }
+});
+
+// --- Swagger UI Route (Protected) ---
+// Serve Swagger UI at /api-docs, protected by basic auth
+app.use('/api-docs', swaggerAuth, swaggerUi.serve, swaggerUi.setup(swaggerSpec));
+
 // --- Socket.IO Connection ---
 io.on('connection', (socket) => {
     logger.info({ socketId: socket.id }, 'User connected via Socket.IO');
@@ -161,12 +226,144 @@ io.on('connection', (socket) => {
     });
 });
 
+// --- Authentication Endpoint ---
+/**
+ * @swagger
+ * /login:
+ *   post:
+ *     summary: Authenticate user
+ *     tags: [Authentication]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - username
+ *               - password
+ *             properties:
+ *               username:
+ *                 type: string
+ *                 example: admin
+ *               password:
+ *                 type: string
+ *                 format: password
+ *                 example: password
+ *     responses:
+ *       200:
+ *         description: Login successful
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Login successful
+ *       401:
+ *         description: Invalid username or password
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: false
+ *                 message:
+ *                   type: string
+ *                   example: Invalid username or password
+ *       500:
+ *         description: Server configuration error (credentials not set)
+ */
+app.post('/login', (req, res) => {
+    const { username, password } = req.body;
+    const adminUsername = process.env.ADMIN_USERNAME;
+    const adminPassword = process.env.ADMIN_PASSWORD;
+
+    if (!adminUsername || !adminPassword) {
+        logger.error('Admin username or password not configured in environment variables.');
+        return res.status(500).json({ success: false, message: 'Server configuration error.' });
+    }
+
+    if (username === adminUsername && password === adminPassword) {
+        logger.info({ username }, 'Successful login');
+        // In a real app, you'd generate a token or session here
+        res.status(200).json({ success: true, message: 'Login successful' });
+    } else {
+        logger.warn({ username }, 'Failed login attempt');
+        res.status(401).json({ success: false, message: 'Invalid username or password' });
+    }
+});
+
 // --- Routes ---
+/**
+ * @swagger
+ * tags:
+ *   name: Session
+ *   description: WhatsApp session management
+ */
+
+/**
+ * @swagger
+ * /:
+ *   get:
+ *     summary: Serves the frontend application
+ *     tags: [Frontend]
+ *     responses:
+ *       200:
+ *         description: HTML content of the single page application.
+ *         content:
+ *           text/html:
+ *             schema:
+ *               type: string
+ */
 app.get('/', (req, res) => {
   res.sendFile(path.join(__dirname, 'public', 'index.html'));
 });
 
 // Endpoint to start the WhatsApp session
+/**
+ * @swagger
+ * /start:
+ *   post:
+ *     summary: Start a new WhatsApp session
+ *     description: Initiates the connection to WhatsApp Web, prompts for QR code scan if not logged in.
+ *     tags: [Session]
+ *     responses:
+ *       200:
+ *         description: Session initialization started (QR code might be required).
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Session initialization started.
+ *                 status:
+ *                   type: string
+ *                   example: starting
+ *       400:
+ *         description: Session already active or starting.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Session already active or starting.
+ *                 status:
+ *                   type: string
+ *                   example: isLogged
+ *       500:
+ *         description: Internal server error during session start.
+ */
 app.post('/start', async (req, res, next) => { // Add next for error handling
     if (!venomClient && !['starting', 'qrRead', 'isLogged', 'chatsAvailable'].includes(sessionStatus)) {
         try {
@@ -183,11 +380,74 @@ app.post('/start', async (req, res, next) => { // Add next for error handling
 });
 
 // Endpoint to get the current session status
+/**
+ * @swagger
+ * /status:
+ *   get:
+ *     summary: Get current WhatsApp session status
+ *     description: Returns the current status of the WhatsApp connection and the QR code if applicable.
+ *     tags: [Session]
+ *     responses:
+ *       200:
+ *         description: Current session status.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 status:
+ *                   type: string
+ *                   description: The current connection state (e.g., notLogged, qrRead, isLogged).
+ *                   example: isLogged
+ *                 qrCode:
+ *                   type: string
+ *                   format: binary
+ *                   description: Base64 encoded QR code image data, only present if status is 'qrRead'.
+ *                   nullable: true
+ *                   example: data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAA...
+ */
 app.get('/status', (req, res) => {
     res.status(200).json({ status: sessionStatus, qrCode: (sessionStatus === 'qrRead') ? qrCodeBase64 : null });
 });
 
 // Endpoint to log out
+/**
+ * @swagger
+ * /logout:
+ *   post:
+ *     summary: Logout from the current WhatsApp session
+ *     description: Disconnects the current WhatsApp Web session.
+ *     tags: [Session]
+ *     responses:
+ *       200:
+ *         description: Logout successful.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: Logout successful.
+ *                 status:
+ *                   type: string
+ *                   example: notLogged
+ *       400:
+ *         description: No active session to log out.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 message:
+ *                   type: string
+ *                   example: No active session to log out.
+ *                 status:
+ *                   type: string
+ *                   example: notLogged
+ *       500:
+ *         description: Error during logout process.
+ */
 app.post('/logout', async (req, res, next) => { // Add next
     if (venomClient) {
         try {
@@ -226,8 +486,60 @@ const validateSendText = [
 ];
 
 // --- Message Sending Endpoints ---
+/**
+ * @swagger
+ * tags:
+ *   name: Messaging
+ *   description: Endpoints for sending WhatsApp messages
+ */
 
 // Send text message
+/**
+ * @swagger
+ * /send/text:
+ *   post:
+ *     summary: Send a text message
+ *     tags: [Messaging]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - to
+ *               - message
+ *             properties:
+ *               to:
+ *                 type: string
+ *                 description: Recipient phone number (e.g., 15551234567 or 15551234567@c.us).
+ *                 example: "15551234567"
+ *               message:
+ *                 type: string
+ *                 description: The text message content.
+ *                 example: "Hello from the API!"
+ *     responses:
+ *       200:
+ *         description: Message sent successfully.
+ *         content:
+ *           application/json:
+ *             schema:
+ *               type: object
+ *               properties:
+ *                 success:
+ *                   type: boolean
+ *                   example: true
+ *                 message:
+ *                   type: string
+ *                   example: Message sent successfully
+ *                 data:
+ *                   type: object
+ *                   description: Response data from the WhatsApp client.
+ *       400:
+ *         description: Bad request (e.g., missing parameters, validation error, session not active).
+ *       500:
+ *         description: Internal server error during message sending.
+ */
 app.post('/send/text', validateSendText, async (req, res, next) => { // Add validation and next
     // Handle validation errors
     const errors = validationResult(req);
@@ -267,6 +579,55 @@ app.post('/send/text', validateSendText, async (req, res, next) => { // Add vali
 });
 
 // Send media (image, video, document) - Apply similar validation pattern
+/**
+ * @swagger
+ * /send/media:
+ *   post:
+ *     summary: Send a media message (image, video, document, audio)
+ *     tags: [Messaging]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - to
+ *               - type
+ *               - url
+ *             properties:
+ *               to:
+ *                 type: string
+ *                 description: Recipient phone number.
+ *                 example: "15551234567"
+ *               type:
+ *                 type: string
+ *                 description: Type of media to send.
+ *                 enum: [image, video, document, audio]
+ *                 example: image
+ *               url:
+ *                 type: string
+ *                 format: url
+ *                 description: URL of the media file.
+ *                 example: "https://example.com/image.jpg"
+ *               caption:
+ *                 type: string
+ *                 description: Optional caption for the media.
+ *                 example: "Look at this!"
+ *               fileName:
+ *                 type: string
+ *                 description: Optional filename for the media (especially for documents).
+ *                 example: "report.pdf"
+ *     responses:
+ *       200:
+ *         description: Media sent successfully.
+ *       400:
+ *         description: Bad request (missing parameters, invalid type, session not active).
+ *       500:
+ *         description: Internal server error or failed to send media.
+ *       501:
+ *          description: Media type not implemented (e.g., Sticker from URL).
+ */
 // TODO: Add express-validator checks for /send/media
 app.post('/send/media', /* Add validation middleware here */ async (req, res, next) => { // Add next
     if (!isClientReady()) {
@@ -336,6 +697,67 @@ app.post('/send/media', /* Add validation middleware here */ async (req, res, ne
 });
 
 // Send an interactive list menu
+/**
+ * @swagger
+ * /send/list:
+ *   post:
+ *     summary: Send an interactive list message
+ *     tags: [Messaging]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - to
+ *               - title
+ *               - description
+ *               - buttonText
+ *               - sections
+ *             properties:
+ *               to:
+ *                 type: string
+ *                 example: "15551234567"
+ *               title:
+ *                 type: string
+ *                 example: "Choose an Option"
+ *               subtitle:
+ *                 type: string
+ *                 example: "Select one from the list below"
+ *               description:
+ *                 type: string
+ *                 example: "Available choices:"
+ *               buttonText:
+ *                 type: string
+ *                 example: "View Options"
+ *               sections:
+ *                 type: array
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     title:
+ *                       type: string
+ *                       example: "Section 1"
+ *                     rows:
+ *                       type: array
+ *                       items:
+ *                         type: object
+ *                         properties:
+ *                           title:
+ *                             type: string
+ *                             example: "Option 1"
+ *                           description:
+ *                             type: string
+ *                             example: "Description for Option 1"
+ *     responses:
+ *       200:
+ *         description: List message sent successfully.
+ *       400:
+ *         description: Bad request (missing parameters, invalid format, session not active).
+ *       500:
+ *         description: Internal server error or failed to send list.
+ */
 // TODO: Add express-validator checks for /send/list
 app.post('/send/list', /* Add validation middleware here */ async (req, res, next) => { // Add next
      if (!isClientReady()) {
@@ -365,6 +787,58 @@ app.post('/send/list', /* Add validation middleware here */ async (req, res, nex
 });
 
 // Send buttons
+/**
+ * @swagger
+ * /send/buttons:
+ *   post:
+ *     summary: Send a message with interactive buttons
+ *     tags: [Messaging]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - to
+ *               - description
+ *               - buttons
+ *             properties:
+ *               to:
+ *                 type: string
+ *                 example: "15551234567"
+ *               title:
+ *                 type: string
+ *                 description: Optional title for the button message.
+ *                 example: "Quick Reply"
+ *               description:
+ *                 type: string
+ *                 description: Main text content of the message.
+ *                 example: "Please select an action:"
+ *               buttons:
+ *                 type: array
+ *                 description: Array of button objects.
+ *                 items:
+ *                   type: object
+ *                   properties:
+ *                     buttonId:
+ *                       type: string
+ *                       description: Optional ID for the button (used for Button Reply events).
+ *                       example: "id1"
+ *                     buttonText:
+ *                       type: object
+ *                       properties:
+ *                         displayText:
+ *                           type: string
+ *                           example: "Action 1"
+ *     responses:
+ *       200:
+ *         description: Buttons message sent successfully.
+ *       400:
+ *         description: Bad request (missing parameters, invalid format, session not active).
+ *       500:
+ *         description: Internal server error or failed to send buttons.
+ */
 // TODO: Add express-validator checks for /send/buttons
 app.post('/send/buttons', /* Add validation middleware here */ async (req, res, next) => { // Add next
     if (!isClientReady()) {
@@ -396,6 +870,45 @@ app.post('/send/buttons', /* Add validation middleware here */ async (req, res, 
 });
 
 // Send location
+/**
+ * @swagger
+ * /send/location:
+ *   post:
+ *     summary: Send a location message
+ *     tags: [Messaging]
+ *     requestBody:
+ *       required: true
+ *       content:
+ *         application/json:
+ *           schema:
+ *             type: object
+ *             required:
+ *               - to
+ *               - latitude
+ *               - longitude
+ *               - name
+ *             properties:
+ *               to:
+ *                 type: string
+ *                 example: "15551234567"
+ *               latitude:
+ *                 type: string # Using string as coordinates can be floats or strings
+ *                 example: "37.7749"
+ *               longitude:
+ *                 type: string
+ *                 example: "-122.4194"
+ *               name:
+ *                 type: string
+ *                 description: Name of the location/place.
+ *                 example: "San Francisco, CA"
+ *     responses:
+ *       200:
+ *         description: Location sent successfully.
+ *       400:
+ *         description: Bad request (missing parameters, session not active).
+ *       500:
+ *         description: Internal server error or failed to send location.
+ */
 // TODO: Add express-validator checks for /send/location
 app.post('/send/location', /* Add validation middleware here */ async (req, res, next) => { // Add next
      if (!isClientReady()) {
